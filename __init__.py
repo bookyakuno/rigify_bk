@@ -19,8 +19,8 @@
 # <pep8 compliant>
 
 bl_info = {
-    "name": "Rigify",
-    "version": (0, 6, 1),
+    "name": "Rigify BK.Edit",
+    "version": (0, 6, 2),
     "author": "Nathan Vegdahl, Lucio Rossi, Ivan Cappiello, Alexander Gavrilov",
     "blender": (2, 81, 0),
     "description": "Automatic rigging from building-block components",
@@ -566,18 +566,18 @@ def register():
         description="Transfer selected bones only", default=True)
 
     # Update legacy on restart or reload.
-    if legacy_loaded or bpy.context.preferences.addons['rigify'].preferences.legacy_mode:
-        bpy.context.preferences.addons['rigify'].preferences.legacy_mode = True
+    if legacy_loaded or bpy.context.preferences.addons[__name__.partition('.')[0]].preferences.legacy_mode:
+        bpy.context.preferences.addons[__name__.partition('.')[0]].preferences.legacy_mode = True
 
-    bpy.context.preferences.addons['rigify'].preferences.register_feature_sets(True)
-    bpy.context.preferences.addons['rigify'].preferences.update_external_rigs()
+    bpy.context.preferences.addons[__name__.partition('.')[0]].preferences.register_feature_sets(True)
+    bpy.context.preferences.addons[__name__.partition('.')[0]].preferences.update_external_rigs()
 
     # Add rig parameters
     register_rig_parameters()
 
 
 def register_rig_parameters():
-    if bpy.context.preferences.addons['rigify'].preferences.legacy_mode:
+    if bpy.context.preferences.addons[__name__.partition('.')[0]].preferences.legacy_mode:
         for rig in rig_lists.rig_list:
             r = utils.get_rig_type(rig)
             try:
@@ -600,7 +600,7 @@ def register_rig_parameters():
 def unregister():
     from bpy.utils import unregister_class
 
-    bpy.context.preferences.addons['rigify'].preferences.register_feature_sets(False)
+    bpy.context.preferences.addons[__name__.partition('.')[0]].preferences.register_feature_sets(False)
 
     # Properties on PoseBones and Armature.
     del bpy.types.PoseBone.rigify_type

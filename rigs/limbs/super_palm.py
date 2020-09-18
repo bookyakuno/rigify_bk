@@ -24,12 +24,12 @@ import re
 from math import cos, pi
 from itertools import count, repeat
 
-from rigify.utils.rig import is_rig_base_bone
-from rigify.utils.naming import strip_org, make_derived_name, choose_derived_bone
-from rigify.utils.widgets import create_widget
-from rigify.utils.misc import map_list
+from rigify_bk.utils.rig import is_rig_base_bone
+from rigify_bk.utils.naming import strip_org, make_derived_name, choose_derived_bone
+from rigify_bk.utils.widgets import create_widget
+from rigify_bk.utils.misc import map_list
 
-from rigify.base_rig import BaseRig, stage
+from rigify_bk.base_rig import BaseRig, stage
 
 
 def bone_siblings(obj, bone):
