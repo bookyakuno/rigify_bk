@@ -765,6 +765,10 @@ class Generate(bpy.types.Operator):
         armature_id_store = obj.data
         rig_obj = armature_id_store.rigify_target_rig
         if rig_obj:
+            # save layer display
+            old_layer_l = [i for i in rig_obj.data.layers]
+
+            # save action
             old_action = rig_obj.animation_data.action
 
         try:
@@ -782,7 +786,13 @@ class Generate(bpy.types.Operator):
         finally:
             bpy.ops.object.mode_set(mode='OBJECT')
 
+
             if rig_obj:
+                # restore layer display
+                for index,layer in enumerate(old_layer_l):
+                    rig_obj.data.layers[index] = layer
+
+                # restore action
                 armature_id_store.rigify_target_rig.animation_data.action = old_action
 
 
