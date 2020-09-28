@@ -764,12 +764,15 @@ class Generate(bpy.types.Operator):
         obj = bpy.context.object
         armature_id_store = obj.data
         rig_obj = armature_id_store.rigify_target_rig
+        old_action = None
         if rig_obj:
             # save layer display
             old_layer_l = [i for i in rig_obj.data.layers]
 
+
             # save action
-            old_action = rig_obj.animation_data.action
+            if rig_obj.animation_data:
+                old_action = rig_obj.animation_data.action
 
         try:
             generate.generate_rig(context, context.object)
@@ -793,9 +796,9 @@ class Generate(bpy.types.Operator):
                     rig_obj.data.layers[index] = layer
 
                 # restore action
-                armature_id_store.rigify_target_rig.animation_data.action = old_action
-
-
+                if armature_id_store.rigify_target_rig.animation_data:
+                    if old_action:
+                        armature_id_store.rigify_target_rig.animation_data.action = old_action
 
         return {'FINISHED'}
 
