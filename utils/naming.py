@@ -43,6 +43,10 @@ def split_name(name):
     return NameParts(*name_parts.groups())
 
 
+def is_control_bone(name):
+    return not split_name(name).prefix
+
+
 def combine_name(parts, *, prefix=None, base=None, side_z=None, side=None, number=None):
     eff_prefix = prefix if prefix is not None else parts.prefix
     eff_number = number if number is not None else parts.number
@@ -131,9 +135,9 @@ class SideZ(enum.IntEnum):
             if parts.side_z[1].lower() == 't':
                 return SideZ.TOP
             else:
-                return Side.BOTTOM
+                return SideZ.BOTTOM
         else:
-            return Side.MIDDLE
+            return SideZ.MIDDLE
 
     @staticmethod
     def to_string(parts, side):
@@ -158,6 +162,9 @@ class SideZ(enum.IntEnum):
         return combine_name(parts, side_z=new_side)
 
 
+NameSides = collections.namedtuple('NameSides', ['base', 'side', 'side_z'])
+
+
 def get_name_side(name):
     return Side.from_parts(split_name(name))
 
@@ -169,7 +176,7 @@ def get_name_side_z(name):
 def get_name_base_and_sides(name):
     parts = split_name(name)
     base = combine_name(parts, side='', side_z='')
-    return base, Side.from_parts(parts),  SideZ.from_parts(parts)
+    return NameSides(base, Side.from_parts(parts),  SideZ.from_parts(parts))
 
 
 def change_name_side(name, side=None, *, side_z=None):
@@ -227,15 +234,6 @@ def unique_name(collection, base_name):
     return name
 
 
-def org_name(name):
-    """ Returns the name with ORG_PREFIX stripped from it.
-    """
-    if name.startswith(ORG_PREFIX):
-        return name[len(ORG_PREFIX):]
-    else:
-        return name
-
-
 def strip_org(name):
     """ Returns the name with ORG_PREFIX stripped from it.
     """
@@ -247,7 +245,7 @@ org_name = strip_org
 
 
 def strip_mch(name):
-    """ Returns the name with ORG_PREFIX stripped from it.
+    """ Returns the name with MCH_PREFIX stripped from it.
         """
     if name.startswith(MCH_PREFIX):
         return name[len(MCH_PREFIX):]
@@ -322,5 +320,13 @@ def choose_derived_bone(generator, original, subtype, *, by_owner=True, recursiv
 
     if len(matching) > 0:
         return matching[0]
+
+    # Try matching bones created by legacy rigs just by name - there is no origin data
+    from ..base_generate import LegacyRig
+
+    if isinstance(generator.bone_owners.get(direct), LegacyRig):
+        if not by_owner or generator.bone_owners.get(original) is generator.bone_owners[direct]:
+            assert direct in bones
+            return direct
 
     return None

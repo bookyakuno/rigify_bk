@@ -20,9 +20,9 @@
 
 bl_info = {
     "name": "Rigify BK.Edit",
-    "version": (0, 6, 2),
-    "author": "Nathan Vegdahl, Lucio Rossi, Ivan Cappiello, Alexander Gavrilov",
-    "blender": (2, 81, 0),
+    "version": (0, 6, 3),
+    "author": "Nathan Vegdahl, Lucio Rossi, Ivan Cappiello, Alexander Gavrilov, Bookyakuno(Minor change)",
+    "blender": (2, 82, 0),
     "description": "Automatic rigging from building-block components",
     "location": "Armature properties, Bone properties, View3d tools panel, Armature Add menu",
     "doc_url": "{BLENDER_MANUAL_URL}/addons/rigging/rigify/index.html",
@@ -39,7 +39,6 @@ import bpy
 # With the sole exception of 'utils', modules must be listed in the
 # correct dependency order.
 initial_load_order = [
-    'utils',
     'utils.errors',
     'utils.misc',
     'utils.rig',
@@ -50,6 +49,7 @@ initial_load_order = [
     'utils.widgets',
     'utils.widgets_basic',
     'utils.widgets_special',
+    'utils',
     'utils.mechanism',
     'utils.animation',
     'utils.metaclass',
@@ -64,6 +64,7 @@ initial_load_order = [
     'rig_ui_template',
     'generate',
     'rot_mode',
+    'operators',
     'ui',
 ]
 
@@ -82,6 +83,17 @@ def reload_modules():
     for name in reload_list:
         importlib.reload(sys.modules[name])
 
+def compare_module_list(a, b):
+    # HACK: ignore the "utils" module when comparing module load orders,
+    # because it is inconsistent for reasons unknown.
+    # See rBAa918332cc3f821f5a70b1de53b65dd9ca596b093.
+    utils_module_name = __name__ + '.utils'
+    a_copy = list(a)
+    a_copy.remove(utils_module_name)
+    b_copy = list(b)
+    b_copy.remove(utils_module_name)
+    return a_copy == b_copy
+
 def load_initial_modules():
     load_list = [ __name__ + '.' + name for name in initial_load_order ]
 
@@ -91,29 +103,26 @@ def load_initial_modules():
         module_list = get_loaded_modules()
         expected_list = load_list[0 : max(11, i+1)]
 
-        if module_list != expected_list:
+        if not compare_module_list(module_list, expected_list):
             print('!!! RIGIFY: initial load order mismatch after '+name+' - expected: \n', expected_list, '\nGot:\n', module_list)
 
     return load_list
 
 def load_rigs():
-    if not legacy_loaded:
-        rig_lists.get_internal_rigs()
-        metarig_menu.init_metarig_menu()
+    rig_lists.get_internal_rigs()
+    metarig_menu.init_metarig_menu()
 
 
 if "reload_list" in locals():
     reload_modules()
 else:
-    legacy_loaded = False
-
     load_list = load_initial_modules()
 
     from . import (base_rig, base_generate, rig_ui_template, feature_set_list, rig_lists, generate, ui, metarig_menu)
 
     reload_list = reload_list_init = get_loaded_modules()
 
-    if reload_list != load_list:
+    if not compare_module_list(reload_list, load_list):
         print('!!! RIGIFY: initial load order mismatch - expected: \n', load_list, '\nGot:\n', reload_list)
 
 load_rigs()
@@ -131,83 +140,32 @@ from bpy.props import (
 )
 
 
+class RigifyFeatureSets(bpy.types.PropertyGroup):
+    name: bpy.props.StringProperty()
+    module_name: bpy.props.StringProperty()
+
+
 class RigifyPreferences(AddonPreferences):
     # this must match the addon name, use '__package__'
     # when defining this in a submodule of a python package.
     bl_idname = __name__
 
-    def update_legacy(self, context):
-        global legacy_loaded, reload_list
-
-        if self.legacy_mode:
-            if legacy_loaded:    # already in legacy mode. needed when rigify is reloaded
-                return
-            else:
-                unregister()
-                reload_modules()
-
-                globals().pop('utils')
-                globals().pop('rig_lists')
-                globals().pop('generate')
-                globals().pop('ui')
-                globals().pop('metarig_menu')
-
-                from .legacy import utils, rig_lists, generate, ui, metarig_menu
-
-                print("ENTERING RIGIFY LEGACY\r\n")
-
-                legacy_loaded = True
-                reload_list += [ m.__name__ for m in [ legacy, utils, rig_lists, generate, ui, metarig_menu ] ]
-
-                globals()['utils'] = legacy.utils
-                globals()['rig_lists'] = legacy.rig_lists
-                globals()['generate'] = legacy.generate
-                globals()['ui'] = legacy.ui
-                globals()['metarig_menu'] = legacy.metarig_menu
-
-                register()
-
-        else:
-            unregister()
-
-            globals().pop('utils')
-            globals().pop('rig_lists')
-            globals().pop('generate')
-            globals().pop('ui')
-            globals().pop('metarig_menu')
-
-            from . import utils, rig_lists, generate, ui, metarig_menu
-
-            print("EXIT RIGIFY LEGACY\r\n")
-
-            globals()['utils'] = utils
-            globals()['rig_lists'] = rig_lists
-            globals()['generate'] = generate
-            globals()['ui'] = ui
-            globals()['metarig_menu'] = metarig_menu
-
-            legacy_loaded = False
-            reload_list = reload_list_init
-            reload_modules()
-
-            load_rigs()
-
-            register()
-
     def register_feature_sets(self, register):
         """Call register or unregister of external feature sets"""
-        if self.legacy_mode:
-            return
-
         for set_name in feature_set_list.get_installed_list():
             feature_set_list.call_register_function(set_name, register)
 
     def update_external_rigs(self, force=False):
         """Get external feature sets"""
-        if self.legacy_mode:
-            return
-
         set_list = feature_set_list.get_installed_list()
+
+        # Update feature set list
+        self.rigify_feature_sets.clear()
+
+        for s in set_list:
+            list_entry = self.rigify_feature_sets.add()
+            list_entry.name = feature_set_list.get_ui_name(s)
+            list_entry.module_name = s
 
         if force or len(set_list) > 0:
             # Reload rigs
@@ -221,70 +179,83 @@ class RigifyPreferences(AddonPreferences):
             # Re-register rig parameters
             register_rig_parameters()
 
-    legacy_mode: BoolProperty(
-        name='Rigify Legacy Mode',
-        description='Select if you want to use Rigify in legacy mode',
-        default=False,
-        update=update_legacy
-    )
-
-    show_expanded: BoolProperty()
-
-    show_rigs_folder_expanded: BoolProperty()
+    rigify_feature_sets: bpy.props.CollectionProperty(type=RigifyFeatureSets)
+    active_feature_set_index: IntProperty()
 
     def draw(self, context):
         layout = self.layout
-        column = layout.column()
-        box = column.box()
 
-        # first stage
-        expand = getattr(self, 'show_expanded')
-        icon = 'TRIA_DOWN' if expand else 'TRIA_RIGHT'
-        col = box.column()
-        row = col.row()
-        sub = row.row()
-        sub.context_pointer_set('addon_prefs', self)
-        sub.alignment = 'LEFT'
-        op = sub.operator('wm.context_toggle', text='', icon=icon,
-                          emboss=False)
-        op.data_path = 'addon_prefs.show_expanded'
-        sub.label(text='{}: {}'.format('Rigify', 'Enable Legacy Mode'))
-        sub = row.row()
-        sub.alignment = 'RIGHT'
-        sub.prop(self, 'legacy_mode')
+        layout.label(text="Feature Sets:")
 
-        if expand:
-            split = col.row().split(factor=0.15)
-            split.label(text='Description:')
-            split.label(text='When enabled the add-on will run in legacy mode using the old 2.76b feature set.')
-
-        box = column.box()
-        rigs_expand = getattr(self, 'show_rigs_folder_expanded')
-        icon = 'TRIA_DOWN' if rigs_expand else 'TRIA_RIGHT'
-        col = box.column()
-        row = col.row()
-        sub = row.row()
-        sub.context_pointer_set('addon_prefs', self)
-        sub.alignment = 'LEFT'
-        op = sub.operator('wm.context_toggle', text='', icon=icon,
-                          emboss=False)
-        op.data_path = 'addon_prefs.show_rigs_folder_expanded'
-        sub.label(text='{}: {}'.format('Rigify', 'External feature sets'))
-        if rigs_expand:
-            for fs in feature_set_list.get_installed_list():
-                row = col.split(factor=0.8)
-                row.label(text=feature_set_list.get_ui_name(fs))
-                op = row.operator("wm.rigify_remove_feature_set", text="Remove", icon='CANCEL')
-                op.featureset = fs
-            row = col.row(align=True)
-            row.operator("wm.rigify_add_feature_set", text="Install Feature Set from File...", icon='FILEBROWSER')
-
-            split = col.row().split(factor=0.15)
-            split.label(text='Description:')
-            split.label(text='External feature sets (rigs, metarigs, ui layouts)')
+        layout.operator("wm.rigify_add_feature_set", text="Install Feature Set from File...", icon='FILEBROWSER')
 
         row = layout.row()
-        row.label(text="End of Rigify Preferences")
+        row.template_list(
+            "UI_UL_list",
+            "rigify_feature_sets",
+            self, "rigify_feature_sets",
+            self, 'active_feature_set_index'
+        )
+
+        # Clamp active index to ensure it's in bounds.
+        self.active_feature_set_index = max(0, min(self.active_feature_set_index, len(self.rigify_feature_sets)-1))
+
+        if len(self.rigify_feature_sets) > 0:
+            active_fs = self.rigify_feature_sets[self.active_feature_set_index]
+
+            if active_fs:
+                draw_feature_set_prefs(layout, context, active_fs)
+
+
+def draw_feature_set_prefs(layout, context, featureset: RigifyFeatureSets):
+    info = feature_set_list.get_info_dict(featureset.module_name)
+
+    description = featureset.name
+    if 'description' in info:
+        description = info['description']
+
+    col = layout.column()
+    split_factor = 0.15
+
+    split = col.row().split(factor=split_factor)
+    split.label(text="Description:")
+    split.label(text=description)
+
+    mod = feature_set_list.get_module_safe(featureset.module_name)
+    if mod:
+        split = col.row().split(factor=split_factor)
+        split.label(text="File:")
+        split.label(text=mod.__file__, translate=False)
+
+    if 'author' in info:
+        split = col.row().split(factor=split_factor)
+        split.label(text="Author:")
+        split.label(text=info["author"])
+
+    if 'version' in info:
+        split = col.row().split(factor=split_factor)
+        split.label(text="Version:")
+        split.label(text=".".join(str(x) for x in info['version']), translate=False)
+    if 'warning' in info:
+        split = col.row().split(factor=split_factor)
+        split.label(text="Warning:")
+        split.label(text="  " + info['warning'], icon='ERROR')
+
+    split = col.row().split(factor=split_factor)
+    split.label(text="Internet:")
+    row = split.row()
+    if 'link' in info:
+        op = row.operator('wm.url_open', text="Repository", icon='URL')
+        op.url = info['link']
+    if 'doc_url' in info:
+        op = row.operator('wm.url_open', text="Documentation", icon='HELP')
+        op.url = info['doc_url']
+    if 'tracker_url' in info:
+        op = row.operator('wm.url_open', text="Report a Bug", icon='URL')
+        op.url = info['tracker_url']
+
+    op = row.operator("wm.rigify_remove_feature_set", text="Remove", icon='CANCEL')
+    op.featureset = featureset.module_name
 
 
 class RigifyName(bpy.types.PropertyGroup):
@@ -407,16 +378,17 @@ class RigifyParameterValidator(object):
     def __getattr__(self, name):
         return getattr(self.__params, name)
 
-    def __setattr__(self, name, val):
+    def __setattr__(self, name, val_original):
         # allow __init__ to work correctly
         if hasattr(RigifyParameterValidator, name):
-            return object.__setattr__(self, name, val)
+            return object.__setattr__(self, name, val_original)
 
-        if not (isinstance(val, tuple) and callable(val[0]) and isinstance(val[1], dict)):
-            print("!!! RIGIFY RIG %s: INVALID DEFINITION FOR RIG PARAMETER %s: %r\n" % (self.__rig_name, name, val))
+        if not isinstance(val_original, bpy.props._PropertyDeferred):
+            print("!!! RIGIFY RIG %s: INVALID DEFINITION FOR RIG PARAMETER %s: %r\n" % (self.__rig_name, name, val_original))
             return
 
         # actually defining the property modifies the dictionary with new parameters, so copy it now
+        val = (val_original.function, val_original.keywords)
         new_def = (val[0], val[1].copy())
 
         if 'poll' in new_def[1]:
@@ -429,9 +401,10 @@ class RigifyParameterValidator(object):
                 print("!!! PREVIOUS DEFINITION BY %s:\n\n    %s\n" % (cur_rig, format_property_spec(cur_info)))
 
         # inject a generic update callback that calls the appropriate rig classmethod
-        val[1]['update'] = update_callback(name)
+        if val[0] != bpy.props.CollectionProperty:
+            val[1]['update'] = update_callback(name)
 
-        setattr(self.__params, name, val)
+        setattr(self.__params, name, val_original)
         self.__prop_table[name] = (self.__rig_name, new_def)
 
 
@@ -465,6 +438,7 @@ classes = (
     RigifyColorSet,
     RigifySelectionColors,
     RigifyArmatureLayer,
+    RigifyFeatureSets,
     RigifyPreferences,
 )
 
@@ -476,6 +450,7 @@ def register():
     ui.register()
     feature_set_list.register()
     metarig_menu.register()
+    operators.register()
 
     # Classes.
     for cls in classes:
@@ -527,6 +502,8 @@ def register():
         name="Rigify Active Collection",
         description="The selected rig collection")
 
+    IDStore.rigify_widgets = CollectionProperty(type=RigifyName)
+
     IDStore.rigify_types = CollectionProperty(type=RigifyName)
     IDStore.rigify_active_type = IntProperty(name="Rigify Active Type", description="The selected rig type")
 
@@ -565,42 +542,30 @@ def register():
         name="Transfer Only Selected",
         description="Transfer selected bones only", default=True)
 
-    # Update legacy on restart or reload.
-    if legacy_loaded or bpy.context.preferences.addons[__name__.partition('.')[0]].preferences.legacy_mode:
-        bpy.context.preferences.addons[__name__.partition('.')[0]].preferences.legacy_mode = True
-
-    bpy.context.preferences.addons[__name__.partition('.')[0]].preferences.register_feature_sets(True)
-    bpy.context.preferences.addons[__name__.partition('.')[0]].preferences.update_external_rigs()
+    bpy.context.preferences.addons[__package__].preferences.register_feature_sets(True)
+    bpy.context.preferences.addons[__package__].preferences.update_external_rigs()
 
     # Add rig parameters
     register_rig_parameters()
 
 
 def register_rig_parameters():
-    if bpy.context.preferences.addons[__name__.partition('.')[0]].preferences.legacy_mode:
-        for rig in rig_lists.rig_list:
-            r = utils.get_rig_type(rig)
-            try:
+    for rig in rig_lists.rigs:
+        rig_module = rig_lists.rigs[rig]['module']
+        rig_class = rig_module.Rig
+        r = rig_class if hasattr(rig_class, 'add_parameters') else rig_module
+        try:
+            if hasattr(r, 'add_parameters'):
                 r.add_parameters(RigifyParameterValidator(RigifyParameters, rig, RIGIFY_PARAMETER_TABLE))
-            except AttributeError:
-                pass
-    else:
-        for rig in rig_lists.rigs:
-            rig_module = rig_lists.rigs[rig]['module']
-            rig_class = rig_module.Rig
-            r = rig_class if hasattr(rig_class, 'add_parameters') else rig_module
-            try:
-                if hasattr(r, 'add_parameters'):
-                    r.add_parameters(RigifyParameterValidator(RigifyParameters, rig, RIGIFY_PARAMETER_TABLE))
-            except Exception:
-                import traceback
-                traceback.print_exc()
+        except Exception:
+            import traceback
+            traceback.print_exc()
 
 
 def unregister():
     from bpy.utils import unregister_class
 
-    bpy.context.preferences.addons[__name__.partition('.')[0]].preferences.register_feature_sets(False)
+    bpy.context.preferences.addons[__package__].preferences.register_feature_sets(False)
 
     # Properties on PoseBones and Armature.
     del bpy.types.PoseBone.rigify_type
@@ -634,6 +599,7 @@ def unregister():
     clear_rigify_parameters()
 
     # Sub-modules.
+    operators.unregister()
     metarig_menu.unregister()
     ui.unregister()
     feature_set_list.unregister()

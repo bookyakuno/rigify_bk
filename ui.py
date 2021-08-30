@@ -94,6 +94,8 @@ class DATA_PT_rigify_buttons(bpy.types.Panel):
                     break
             for b in obj.pose.bones:
                 if b.rigify_type in outdated_types.keys():
+                    old_bone = b.name
+                    old_rig = b.rigify_type
                     if outdated_types[b.rigify_type]:
                         show_update_metarig = True
                     else:
@@ -106,6 +108,7 @@ class DATA_PT_rigify_buttons(bpy.types.Panel):
 
             if show_not_updatable:
                 layout.label(text="WARNING: This metarig contains deprecated rigify rig-types and cannot be upgraded automatically.", icon='ERROR')
+                layout.label(text="("+old_rig+" on bone "+old_bone+")")
                 layout.label(text="If you want to use it anyway try enabling the legacy mode before generating again.")
 
                 layout.operator("pose.rigify_switch_to_legacy", text="Switch to Legacy")
@@ -115,6 +118,7 @@ class DATA_PT_rigify_buttons(bpy.types.Panel):
             if show_update_metarig:
 
                 layout.label(text="This metarig contains old rig-types that can be automatically upgraded to benefit of rigify's new features.", icon='ERROR')
+                layout.label(text="("+old_rig+" on bone "+old_bone+")")
                 layout.label(text="To use it as-is you need to enable legacy mode.",)
                 layout.operator("pose.rigify_upgrade_types", text="Upgrade Metarig")
 
@@ -608,30 +612,38 @@ class BONE_PT_rigify_buttons(bpy.types.Panel):
         if rig_name != "":
             try:
                 rig = rig_lists.rigs[rig_name]['module']
-            except (ImportError, AttributeError):
+            except (ImportError, AttributeError, KeyError):
                 row = layout.row()
                 box = row.box()
-                box.label(text="ALERT: type \"%s\" does not exist!" % rig_name)
+                box.label(text="ERROR: type \"%s\" does not exist!" % rig_name, icon='ERROR')
             else:
                 if hasattr(rig.Rig, 'parameters_ui'):
                     rig = rig.Rig
+
                 try:
-                    rig.parameters_ui
+                    param_cb = rig.parameters_ui
+
+                    # Ignore the known empty base method
+                    if getattr(param_cb, '__func__', None) == base_rig.BaseRig.parameters_ui.__func__:
+                        param_cb = None
                 except AttributeError:
+                    param_cb = None
+
+                if param_cb is None:
                     col = layout.column()
                     col.label(text="No options")
                 else:
                     col = layout.column()
                     col.label(text="Options:")
                     box = layout.box()
-                    rig.parameters_ui(box, bone.rigify_parameters)
+                    param_cb(box, bone.rigify_parameters)
 
 
 class VIEW3D_PT_tools_rigify_dev(bpy.types.Panel):
     bl_label = "Rigify Dev Tools"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = 'Rigify'
+    bl_category = "Rigify"
 
     @classmethod
     def poll(cls, context):
@@ -660,7 +672,7 @@ class VIEW3D_PT_rigify_animation_tools(bpy.types.Panel):
     bl_context = "posemode"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = 'Rigify'
+    bl_category = "Rigify"
 
     @classmethod
     def poll(cls, context):
@@ -752,27 +764,33 @@ class LayerInit(bpy.types.Operator):
         return {'FINISHED'}
 
 
+def is_metarig(obj):
+    if not (obj and obj.data and obj.type == 'ARMATURE'):
+        return False
+    if 'rig_id' in obj.data:
+        return False
+    for b in obj.pose.bones:
+        if b.rigify_type != "":
+            return True
+    return False
+
 class Generate(bpy.types.Operator):
     """Generates a rig from the active metarig armature"""
 
     bl_idname = "pose.rigify_generate"
     bl_label = "Rigify Generate Rig"
-    bl_options = {'UNDO', 'INTERNAL'}
+    bl_options = {'UNDO'}
     bl_description = 'Generates a rig from the active metarig armature'
 
+    @classmethod
+    def poll(cls, context):
+        return is_metarig(context.object)
+
     def execute(self, context):
-        obj = bpy.context.object
-        armature_id_store = obj.data
-        rig_obj = armature_id_store.rigify_target_rig
-        old_action = None
-        if rig_obj:
-            # save layer display
-            old_layer_l = [i for i in rig_obj.data.layers]
 
-
-            # save action
-            if rig_obj.animation_data:
-                old_action = rig_obj.animation_data.action
+        ##################
+        armature_id_store, old_layer_l, old_action = self.backup_old_rig_data()
+        ##################
 
         try:
             generate.generate_rig(context, context.object)
@@ -789,18 +807,40 @@ class Generate(bpy.types.Operator):
         finally:
             bpy.ops.object.mode_set(mode='OBJECT')
 
-
-            if rig_obj:
-                # restore layer display
-                for index,layer in enumerate(old_layer_l):
-                    rig_obj.data.layers[index] = layer
-
-                # restore action
-                if armature_id_store.rigify_target_rig.animation_data:
-                    if old_action:
-                        armature_id_store.rigify_target_rig.animation_data.action = old_action
+            ##################
+            self.load_old_rig_data(armature_id_store, old_layer_l, old_action)
+            ##################
 
         return {'FINISHED'}
+
+
+    def backup_old_rig_data(self):
+        obj = bpy.context.object
+        armature_id_store = obj.data
+        rig_obj = armature_id_store.rigify_target_rig
+        old_action = None
+        old_layer_l = []
+        if rig_obj:
+            # save layer display
+            old_layer_l = [i for i in rig_obj.data.layers]
+
+            # save action
+            if rig_obj.animation_data:
+                old_action = rig_obj.animation_data.action
+        return  armature_id_store, old_layer_l, old_action
+
+
+    def load_old_rig_data(self, armature_id_store, old_layer_l, old_action):
+        rig_obj = armature_id_store.rigify_target_rig
+        if rig_obj:
+            # restore layer display
+            for index,layer in enumerate(old_layer_l):
+                rig_obj.data.layers[index] = layer
+
+            # restore action
+            if rig_obj.animation_data:
+                if old_action:
+                    rig_obj.animation_data.action = old_action
 
 
 class UpgradeMetarigTypes(bpy.types.Operator):
@@ -816,62 +856,64 @@ class UpgradeMetarigTypes(bpy.types.Operator):
             if type(obj.data) == bpy.types.Armature:
                 upgradeMetarigTypes(obj)
         return {'FINISHED'}
-
-
-class SwitchToLegacy(bpy.types.Operator):
-    """Switch to Legacy mode"""
-
-    bl_idname = "pose.rigify_switch_to_legacy"
-    bl_label = "Legacy Mode will disable Rigify new features"
-    bl_description = 'Switches Rigify to Legacy Mode'
-    bl_options = {'UNDO', 'INTERNAL'}
-
-    def invoke(self, context, event):
-        return context.window_manager.invoke_confirm(self, event)
-
-    def execute(self, context):
-        bpy.context.preferences.addons['rigify'].preferences.legacy_mode = True
-        return {'FINISHED'}
-
-
 class Sample(bpy.types.Operator):
     """Create a sample metarig to be modified before generating the final rig"""
 
     bl_idname = "armature.metarig_sample_add"
-    bl_label = "Add a sample metarig for a rig type"
-    bl_options = {'UNDO', 'INTERNAL'}
+    bl_label = "Add Metarig Sample"
+    bl_options = {'UNDO'}
 
     metarig_type: StringProperty(
         name="Type",
         description="Name of the rig type to generate a sample of",
         maxlen=128,
+        options={'SKIP_SAVE'}
     )
 
+    @classmethod
+    def poll(cls, context):
+        return context.mode == 'EDIT_ARMATURE'
+
+    def draw(self, context):
+        layout = self.layout
+        layout.use_property_split = True
+        layout.use_property_decorate = False
+        col = layout.column()
+        build_type_list(context, context.window_manager.rigify_types)
+        col.prop(context.object.data, "active_feature_set")
+        col.prop_search(self, "metarig_type", context.window_manager, "rigify_types")
+
+    def invoke(self, context, event):
+        if self.metarig_type == "":
+            return context.window_manager.invoke_props_dialog(self)
+        return self.execute(context)
+
     def execute(self, context):
-        if context.mode == 'EDIT_ARMATURE' and self.metarig_type != "":
-            try:
-                rig = rig_lists.rigs[self.metarig_type]["module"]
-                create_sample = rig.create_sample
-            except (ImportError, AttributeError):
-                raise Exception("rig type '" + self.metarig_type + "' has no sample.")
-            else:
-                create_sample(context.active_object)
-            finally:
-                bpy.ops.object.mode_set(mode='EDIT')
+        if self.metarig_type == "":
+            self.report({'ERROR'}, "You must select a rig type to create a sample of.")
+            return {'CANCELLED'}
+        try:
+            rig = rig_lists.rigs[self.metarig_type]["module"]
+            create_sample = rig.create_sample
+        except (ImportError, AttributeError, KeyError):
+            raise Exception("rig type '" + self.metarig_type + "' has no sample.")
+        else:
+            create_sample(context.active_object)
+        finally:
+            bpy.ops.object.mode_set(mode='EDIT')
 
         return {'FINISHED'}
 
 
 class EncodeMetarig(bpy.types.Operator):
-    """ Creates Python code that will generate the selected metarig.
-    """
+    """Creates Python code that will generate the selected metarig"""
     bl_idname = "armature.rigify_encode_metarig"
     bl_label = "Rigify Encode Metarig"
     bl_options = {'UNDO'}
 
     @classmethod
     def poll(self, context):
-        return context.mode == 'EDIT_ARMATURE'
+        return context.mode == 'EDIT_ARMATURE' and is_metarig(context.object)
 
     def execute(self, context):
         name = "metarig.py"
@@ -882,24 +924,22 @@ class EncodeMetarig(bpy.types.Operator):
         else:
             text_block = bpy.data.texts.new(name)
 
-        text = write_metarig(context.active_object, layers=True, func_name="create", groups=True)
+        text = write_metarig(context.active_object, layers=True, func_name="create", groups=True, widgets=True)
         text_block.write(text)
         bpy.ops.object.mode_set(mode='EDIT')
-
+        self.report({'INFO'}, f"Metarig written to text datablock: {text_block.name}")
         return {'FINISHED'}
 
 
 class EncodeMetarigSample(bpy.types.Operator):
-    """ Creates Python code that will generate the selected metarig
-        as a sample.
-    """
+    """Creates Python code that will generate the selected metarig as a sample"""
     bl_idname = "armature.rigify_encode_metarig_sample"
     bl_label = "Rigify Encode Metarig Sample"
     bl_options = {'UNDO'}
 
     @classmethod
     def poll(self, context):
-        return context.mode == 'EDIT_ARMATURE'
+        return context.mode == 'EDIT_ARMATURE' and is_metarig(context.object)
 
     def execute(self, context):
         name = "metarig_sample.py"
@@ -914,8 +954,30 @@ class EncodeMetarigSample(bpy.types.Operator):
         text_block.write(text)
         bpy.ops.object.mode_set(mode='EDIT')
 
+        self.report({'INFO'}, f"Metarig Sample written to text datablock: {text_block.name}")
         return {'FINISHED'}
 
+
+class VIEW3D_MT_rigify(bpy.types.Menu):
+    bl_label = "Rigify"
+    bl_idname = "VIEW3D_MT_rigify"
+
+    def draw(self, context):
+        layout = self.layout
+
+        layout.operator(Generate.bl_idname, text="Generate")
+
+        if context.mode == 'EDIT_ARMATURE':
+            layout.separator()
+            layout.operator(Sample.bl_idname)
+            layout.separator()
+            layout.operator(EncodeMetarig.bl_idname, text="Encode Metarig")
+            layout.operator(EncodeMetarigSample.bl_idname, text="Encode Metarig Sample")
+
+
+def draw_rigify_menu(self, context):
+    if is_metarig(context.object):
+        self.layout.menu(VIEW3D_MT_rigify.bl_idname)
 
 class EncodeWidget(bpy.types.Operator):
     """ Creates Python code that will generate the selected metarig.
@@ -942,6 +1004,10 @@ class EncodeWidget(bpy.types.Operator):
         bpy.ops.object.mode_set(mode='EDIT')
 
         return {'FINISHED'}
+
+def draw_mesh_edit_menu(self, context):
+    self.layout.operator(EncodeWidget.bl_idname)
+    self.layout.separator()
 
 
 def FktoIk(rig, window='ALL'):
@@ -1356,8 +1422,8 @@ classes = (
     LayerInit,
     Generate,
     UpgradeMetarigTypes,
-    SwitchToLegacy,
     Sample,
+    VIEW3D_MT_rigify,
     EncodeMetarig,
     EncodeMetarigSample,
     EncodeWidget,
@@ -1379,6 +1445,9 @@ def register():
     for cls in classes:
         register_class(cls)
 
+    bpy.types.VIEW3D_MT_editor_menus.append(draw_rigify_menu)
+    bpy.types.VIEW3D_MT_edit_mesh.prepend(draw_mesh_edit_menu)
+
     # Sub-modules.
     rot_mode.register()
 
@@ -1392,5 +1461,8 @@ def unregister():
     # Classes.
     for cls in classes:
         unregister_class(cls)
+
+    bpy.types.VIEW3D_MT_editor_menus.remove(draw_rigify_menu)
+    bpy.types.VIEW3D_MT_edit_mesh.remove(draw_mesh_edit_menu)
 
     animation_unregister()

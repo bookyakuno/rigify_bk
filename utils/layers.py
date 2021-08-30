@@ -63,6 +63,24 @@ def set_bone_layers(bone, layers, combine=False):
 # UI utilities
 #=============================================
 
+
+def layout_layer_buttons(layout, params, option, active_layers):
+    "Draw a layer selection button UI with certain layers marked with dots."
+    outer = layout.row()
+
+    for x in [0, 8]:
+        col = outer.column(align=True)
+
+        for y in [0, 16]:
+            row = col.row(align=True)
+
+            for i in range(x+y, x+y+8):
+                row.prop(
+                    params, option, index=i, toggle=True, text="",
+                    icon="LAYER_ACTIVE" if active_layers[i] else "NONE"
+                )
+
+
 class ControlLayersOption:
     def __init__(self, name, toggle_name=None, toggle_default=True, description="Set of control layers"):
         self.name = name
@@ -116,6 +134,7 @@ class ControlLayersOption:
         prop_layers = bpy.props.BoolVectorProperty(
             size=32,
             description=self.description,
+            subtype='LAYER',
             default=tuple([i == 1 for i in range(0, 32)])
         )
 
@@ -130,43 +149,14 @@ class ControlLayersOption:
         if not active:
             return
 
-        r = box.row()
-        col = r.column(align=True)
-        row = col.row(align=True)
+        active_layers = bpy.context.active_pose_bone.bone.layers[:]
 
-        bone_layers = bpy.context.active_pose_bone.bone.layers[:]
-
-        for i in range(8):    # Layers 0-7
-            icon = "NONE"
-            if bone_layers[i]:
-                icon = "LAYER_ACTIVE"
-            row.prop(params, self.layers_option, index=i, toggle=True, text="", icon=icon)
-
-        row = col.row(align=True)
-
-        for i in range(16, 24):     # Layers 16-23
-            icon = "NONE"
-            if bone_layers[i]:
-                icon = "LAYER_ACTIVE"
-            row.prop(params, self.layers_option, index=i, toggle=True, text="", icon=icon)
-
-        col = r.column(align=True)
-        row = col.row(align=True)
-
-        for i in range(8, 16):  # Layers 8-15
-            icon = "NONE"
-            if bone_layers[i]:
-                icon = "LAYER_ACTIVE"
-            row.prop(params, self.layers_option, index=i, toggle=True, text="", icon=icon)
-
-        row = col.row(align=True)
-
-        for i in range(24, 32):     # Layers 24-31
-            icon = "NONE"
-            if bone_layers[i]:
-                icon = "LAYER_ACTIVE"
-            row.prop(params, self.layers_option, index=i, toggle=True, text="", icon=icon)
+        layout_layer_buttons(box, params, self.layers_option, active_layers)
 
 
 ControlLayersOption.FK = ControlLayersOption('fk', description="Layers for the FK controls to be on")
 ControlLayersOption.TWEAK = ControlLayersOption('tweak', description="Layers for the tweak controls to be on")
+
+# Layer parameters used by the super_face rig.
+ControlLayersOption.FACE_PRIMARY = ControlLayersOption('primary', description="Layers for the primary controls to be on")
+ControlLayersOption.FACE_SECONDARY = ControlLayersOption('secondary', description="Layers for the secondary controls to be on")

@@ -119,6 +119,13 @@ class GenerateCallbackHost(BaseStagedClass, define_stages=True):
         """
         pass
 
+    def preapply_bones(self):
+        """
+        Read bone matrices for applying to edit mode.
+        Called in Object mode. May not do Edit mode operations.
+        """
+        pass
+
     def apply_bones(self):
         """
         Can be used to apply some constraints to rest pose, and for final parenting.
@@ -152,7 +159,7 @@ class BaseRig(GenerateCallbackHost, RaiseErrorMixin, BoneUtilityMixin, Mechanism
     """
     Base class for all rigs.
 
-    The main weak areas in the legacy Rigify rig class structure
+    The main weak areas in the legacy (pre-2.76b) Rigify rig class structure
     was that there were no provisions for intelligent interactions
     between rigs, and all processing was done via one generate
     method, necessitating frequent expensive mode switches.
@@ -236,7 +243,7 @@ class BaseRig(GenerateCallbackHost, RaiseErrorMixin, BoneUtilityMixin, Mechanism
         :param params:
         :return:
         """
-        layout.label(text="No options")
+        pass
 
     @classmethod
     def on_parameter_update(cls, context, pose_bone, params, param_name):
@@ -260,14 +267,25 @@ class RigUtility(BoneUtilityMixin, MechanismUtilityMixin):
         self.owner.register_new_bone(new_name, old_name)
 
 
-class RigComponent(GenerateCallbackHost, RigUtility):
-    """Base class for utility classes that generate part of a rig using callbacks."""
+class LazyRigComponent(GenerateCallbackHost, RigUtility):
+    """Base class for utility classes that generate part of a rig using callbacks. Starts as disabled."""
     def __init__(self, owner):
         super().__init__(owner)
 
-        self.owner.rigify_sub_objects = objects = self.owner.rigify_sub_objects or []
+        self.is_component_enabled = False
 
-        objects.append(self)
+    def enable_component(self):
+        if not self.is_component_enabled:
+            self.is_component_enabled = True
+            self.owner.rigify_sub_objects = objects = self.owner.rigify_sub_objects or []
+            objects.append(self)
+
+
+class RigComponent(LazyRigComponent):
+    """Base class for utility classes that generate part of a rig using callbacks."""
+    def __init__(self, owner):
+        super().__init__(owner)
+        self.enable_component()
 
 
 #=============================================

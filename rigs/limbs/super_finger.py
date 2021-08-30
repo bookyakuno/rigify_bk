@@ -63,7 +63,7 @@ class Rig(SimpleChainRig):
 
         first_bone = self.get_bone(orgs[0])
         last_bone = self.get_bone(orgs[-1])
-        self.get_bone(name).tail += (last_bone.tail - first_bone.head) * 1.25
+        self.get_bone(name).length += (last_bone.tail - first_bone.head).length * 1.25
 
     @stage.configure_bones
     def configure_master_control(self):
@@ -100,7 +100,7 @@ class Rig(SimpleChainRig):
         self.bones.ctrl.fk += [self.make_tip_control_bone(orgs[-1], orgs[0])]
 
     def make_control_bone(self, i, org):
-        return self.copy_bone(org, make_derived_name(org, 'ctrl'), parent=False)
+        return self.copy_bone(org, make_derived_name(org, 'ctrl'), inherit_scale=True)
 
     def make_tip_control_bone(self, org, name_org):
         name = self.copy_bone(org, make_derived_name(name_org, 'ctrl'), parent=False)
@@ -219,7 +219,7 @@ class Rig(SimpleChainRig):
         self.bones.mch.bend = map_list(self.make_mch_bend_bone, self.bones.org)
 
     def make_mch_bend_bone(self, org):
-        return self.copy_bone(org, make_derived_name(org, 'mch', '_drv'), parent=False, scale=0.3)
+        return self.copy_bone(org, make_derived_name(org, 'mch', '_drv'), inherit_scale=True, scale=0.3)
 
     @stage.parent_bones
     def parent_mch_bend_chain(self):
@@ -295,8 +295,7 @@ class Rig(SimpleChainRig):
             self.make_constraint(mch, 'COPY_LOCATION', ctrl)
             self.make_constraint(mch, 'COPY_SCALE', ctrl)
 
-        self.make_constraint(mch, 'DAMPED_TRACK', ctrl_next)
-        self.make_constraint(mch, 'STRETCH_TO', ctrl_next, volume='NO_VOLUME')
+        self.make_constraint(mch, 'STRETCH_TO', ctrl_next, volume='NO_VOLUME', keep_axis='SWING_Y')
 
     ##############################
     # ORG chain

@@ -135,7 +135,13 @@ class Rig(BaseHeadTailRig):
             self.configure_control_bone(0, self.bones.ctrl.neck, self.bones.org[0])
         self.configure_control_bone(2, self.bones.ctrl.head, self.bones.org[-1])
         if self.long_neck:
-            self.configure_control_bone(1, self.bones.ctrl.neck_bend, self.bones.org[0])
+            self.configure_neck_bend_bone(self.bones.ctrl.neck_bend, self.bones.org[0])
+
+    def configure_neck_bend_bone(self, ctrl, org):
+        bone = self.get_bone(ctrl)
+        bone.lock_rotation = (True, True, True)
+        bone.lock_rotation_w = True
+        bone.lock_scale = (True, True, True)
 
     @stage.generate_widgets
     def make_control_widgets(self):
@@ -211,8 +217,7 @@ class Rig(BaseHeadTailRig):
             self.rig_mch_stretch_bone(self.bones.mch.stretch, self.bones.ctrl.head)
 
     def rig_mch_stretch_bone(self, mch, head):
-        self.make_constraint(mch, 'DAMPED_TRACK', head)
-        self.make_constraint(mch, 'STRETCH_TO', head)
+        self.make_constraint(mch, 'STRETCH_TO', head, keep_axis='SWING_Y')
 
     ####################################################
     # MCH IK chain for the long neck

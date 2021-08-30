@@ -23,13 +23,16 @@ import re
 import time
 from rna_prop_ui import rna_idprop_ui_prop_get
 
+from .utils.errors import MetarigError
 from .utils.bones import new_bone
 from .utils.layers import ORG_LAYER, MCH_LAYER, DEF_LAYER, ROOT_LAYER
 from .utils.naming import ORG_PREFIX, MCH_PREFIX, DEF_PREFIX, ROOT_NAME, make_original_name
 from .utils.widgets import WGT_PREFIX
 from .utils.widgets_special import create_root_widget
+from .utils.mechanism import refresh_all_drivers
 from .utils.misc import gamma_correct, select_object
 from .utils.collections import ensure_widget_collection, list_layer_collections, filter_layer_collections_by_object
+from .utils.rig import get_rigify_type
 
 from . import base_generate
 from . import rig_ui_template
@@ -111,35 +114,47 @@ class Generator(base_generate.BaseGenerator):
         return obj
 
 
-    def __create_widget_group(self, new_group_name):
-        context = self.context
-        scene = self.scene
-        id_store = self.id_store
-
-        # Create/find widge collection
-        self.widget_collection = ensure_widget_collection(context)
-
-        # Remove wgts if force update is set
+    def __create_widget_group(self):
+        new_group_name = "WGTS_" + self.obj.name
         wgts_group_name = "WGTS_" + (self.rig_old_name or self.obj.name)
-        if wgts_group_name in scene.objects and self.metarig.data.rigify_force_widget_update:
-            bpy.ops.object.mode_set(mode='OBJECT')
-            bpy.ops.object.select_all(action='DESELECT')
-            for wgt in bpy.data.objects[wgts_group_name].children:
-                wgt.select_set(True)
-            bpy.ops.object.delete(use_global=False)
+
+        # Find the old widgets collection
+        old_collection = bpy.data.collections.get(wgts_group_name)
+
+        if not old_collection:
+            # Update the old 'Widgets' collection
+            legacy_collection = bpy.data.collections.get('Widgets')
+
+            if legacy_collection and wgts_group_name in legacy_collection.objects:
+                legacy_collection.name = wgts_group_name
+                old_collection = legacy_collection
+
+        if old_collection:
+            # Remove widgets if force update is set
+            if self.metarig.data.rigify_force_widget_update:
+                for obj in list(old_collection.objects):
+                    bpy.data.objects.remove(obj)
+
+            # Rename widgets and collection if renaming
             if self.rig_old_name:
-                bpy.data.objects[wgts_group_name].name = new_group_name
+                old_prefix = WGT_PREFIX + self.rig_old_name + "_"
+                new_prefix = WGT_PREFIX + self.obj.name + "_"
 
-        # Create Group widget
-        wgts_group_name = new_group_name
-        if wgts_group_name not in scene.objects:
-            if wgts_group_name in bpy.data.objects:
-                bpy.data.objects[wgts_group_name].user_clear()
-                bpy.data.objects.remove(bpy.data.objects[wgts_group_name])
-            mesh = bpy.data.meshes.new(wgts_group_name)
-            wgts_obj = bpy.data.objects.new(wgts_group_name, mesh)
-            self.widget_collection.objects.link(wgts_obj)
+                for obj in list(old_collection.objects):
+                    if obj.name.startswith(old_prefix):
+                        new_name = new_prefix + obj.name[len(old_prefix):]
+                    elif obj.name == wgts_group_name:
+                        new_name = new_group_name
+                    else:
+                        continue
 
+                    obj.data.name = new_name
+                    obj.name = new_name
+
+                old_collection.name = new_group_name
+
+        # Create/find widget collection
+        self.widget_collection = ensure_widget_collection(self.context, new_group_name)
         self.wgts_group_name = new_group_name
 
 
@@ -158,6 +173,14 @@ class Generator(base_generate.BaseGenerator):
         select_object(context, metarig, deselect_all=True)
 
         bpy.ops.object.duplicate()
+
+        # Rename org bones in the temporary object
+        temp_obj = context.view_layer.objects.active
+
+        assert temp_obj and temp_obj != metarig
+
+        self.__freeze_driver_vars(temp_obj)
+        self.__rename_org_bones(temp_obj)
 
         # Select the target rig and join
         select_object(context, obj)
@@ -179,6 +202,9 @@ class Generator(base_generate.BaseGenerator):
             for track in obj.animation_data.nla_tracks:
                 obj.animation_data.nla_tracks.remove(track)
 
+
+    def __freeze_driver_vars(self, obj):
+        if obj.animation_data:
             # Freeze drivers referring to custom properties
             for d in obj.animation_data.drivers:
                 for var in d.driver.variables:
@@ -189,18 +215,27 @@ class Generator(base_generate.BaseGenerator):
                             tar.data_path = "RIGIFY-" + tar.data_path
 
 
-    def __rename_org_bones(self):
-        obj = self.obj
-
+    def __rename_org_bones(self, obj):
         #----------------------------------
         # Make a list of the original bones so we can keep track of them.
         original_bones = [bone.name for bone in obj.data.bones]
 
         # Add the ORG_PREFIX to the original bones.
         for i in range(0, len(original_bones)):
-            new_name = make_original_name(original_bones[i])
-            obj.data.bones[original_bones[i]].name = new_name
-            original_bones[i] = new_name
+            bone = obj.pose.bones[original_bones[i]]
+
+            # Preserve the root bone as is if present
+            if bone.name == ROOT_NAME:
+                if bone.parent:
+                    raise MetarigError('Root bone must have no parent')
+                if get_rigify_type(bone) not in ('', 'basic.raw_copy'):
+                    raise MetarigError('Root bone must have no rig, or use basic.raw_copy')
+                continue
+
+            # This rig type is special in that it preserves the name of the bone.
+            if get_rigify_type(bone) != 'basic.raw_copy':
+                bone.name = make_original_name(original_bones[i])
+                original_bones[i] = bone.name
 
         self.original_bones = original_bones
 
@@ -209,17 +244,22 @@ class Generator(base_generate.BaseGenerator):
         obj = self.obj
         metarig = self.metarig
 
-        #----------------------------------
-        # Create the root bone.
-        root_bone = new_bone(obj, ROOT_NAME)
-        spread = get_xy_spread(metarig.data.bones) or metarig.data.bones[0].length
-        spread = float('%.3g' % spread)
-        scale = spread/0.589
-        obj.data.edit_bones[root_bone].head = (0, 0, 0)
-        obj.data.edit_bones[root_bone].tail = (0, scale, 0)
-        obj.data.edit_bones[root_bone].roll = 0
+        if ROOT_NAME in obj.data.bones:
+            # Use the existing root bone
+            root_bone = ROOT_NAME
+        else:
+            # Create the root bone.
+            root_bone = new_bone(obj, ROOT_NAME)
+            spread = get_xy_spread(metarig.data.bones) or metarig.data.bones[0].length
+            spread = float('%.3g' % spread)
+            scale = spread/0.589
+            obj.data.edit_bones[root_bone].head = (0, 0, 0)
+            obj.data.edit_bones[root_bone].tail = (0, scale, 0)
+            obj.data.edit_bones[root_bone].roll = 0
+
         self.root_bone = root_bone
         self.bone_owners[root_bone] = None
+        self.noparent_bones.add(root_bone)
 
 
     def __parent_bones_to_root(self):
@@ -246,26 +286,34 @@ class Generator(base_generate.BaseGenerator):
 
 
     def __assign_layers(self):
-        bones = self.obj.data.bones
+        pbones = self.obj.pose.bones
 
-        bones[self.root_bone].layers = ROOT_LAYER
+        pbones[self.root_bone].bone.layers = ROOT_LAYER
 
         # Every bone that has a name starting with "DEF-" make deforming.  All the
         # others make non-deforming.
-        for bone in bones:
+        for pbone in pbones:
+            bone = pbone.bone
             name = bone.name
+            layers = None
 
             bone.use_deform = name.startswith(DEF_PREFIX)
 
             # Move all the original bones to their layer.
             if name.startswith(ORG_PREFIX):
-                bone.layers = ORG_LAYER
+                layers = ORG_LAYER
             # Move all the bones with names starting with "MCH-" to their layer.
             elif name.startswith(MCH_PREFIX):
-                bone.layers = MCH_LAYER
+                layers = MCH_LAYER
             # Move all the bones with names starting with "DEF-" to their layer.
             elif name.startswith(DEF_PREFIX):
-                bone.layers = DEF_LAYER
+                layers = DEF_LAYER
+
+            if layers is not None:
+                bone.layers = layers
+
+                # Remove custom shapes from non-control bones
+                pbone.custom_shape = None
 
             bone.bbone_x = bone.bbone_z = bone.length * 0.05
 
@@ -347,7 +395,7 @@ class Generator(base_generate.BaseGenerator):
 
         #------------------------------------------
         # Create Group widget
-        self.__create_widget_group("WGTS_" + obj.name)
+        self.__create_widget_group()
 
         t.tick("Create main WGTS: ")
 
@@ -358,18 +406,12 @@ class Generator(base_generate.BaseGenerator):
             childs[child] = child.parent_bone
 
         #------------------------------------------
-        # Copy bones from metarig to obj
+        # Copy bones from metarig to obj (adds ORG_PREFIX)
         self.__duplicate_rig()
 
+        obj.data.use_mirror_x = False
+
         t.tick("Duplicate rig: ")
-
-        #------------------------------------------
-        # Add the ORG_PREFIX to the original bones.
-        bpy.ops.object.mode_set(mode='OBJECT')
-
-        self.__rename_org_bones()
-
-        t.tick("Make list of org bones: ")
 
         #------------------------------------------
         # Put the rig_name in the armature custom properties
@@ -427,6 +469,13 @@ class Generator(base_generate.BaseGenerator):
         t.tick("Configure bones: ")
 
         #------------------------------------------
+        bpy.ops.object.mode_set(mode='OBJECT')
+
+        self.invoke_preapply_bones()
+
+        t.tick("Preapply bones: ")
+
+        #------------------------------------------
         bpy.ops.object.mode_set(mode='EDIT')
 
         self.invoke_apply_bones()
@@ -443,9 +492,10 @@ class Generator(base_generate.BaseGenerator):
         #------------------------------------------
         bpy.ops.object.mode_set(mode='OBJECT')
 
-        create_root_widget(obj, "root")
-
         self.invoke_generate_widgets()
+
+        # Generate the default root widget last in case it's rigged with raw_copy
+        create_root_widget(obj, self.root_bone)
 
         t.tick("Generate widgets: ")
 
@@ -491,6 +541,9 @@ class Generator(base_generate.BaseGenerator):
                 child.parent_bone = sub_parent
                 child.matrix_world = mat
 
+        # Clear any transient errors in drivers
+        refresh_all_drivers()
+
         #----------------------------------
         # Restore active collection
         view_layer.active_layer_collection = self.layer_collection
@@ -520,40 +573,43 @@ def generate_rig(context, metarig):
         raise e
 
 
-def create_selection_sets(obj, metarig):
+def create_selection_set_for_rig_layer(
+        rig: bpy.types.Object,
+        set_name: str,
+        layer_idx: int
+    ) -> None:
+    """Create a single selection set on a rig.
 
+    The set will contain all bones on the rig layer with the given index.
+    """
+    selset = rig.selection_sets.add()
+    selset.name = set_name
+
+    for b in rig.pose.bones:
+        if not b.bone.layers[layer_idx] or b.name in selset.bone_ids:
+            continue
+
+        bone_id = selset.bone_ids.add()
+        bone_id.name = b.name
+
+def create_selection_sets(obj, metarig):
+    """Create selection sets if the Selection Sets addon is enabled.
+
+    Whether a selection set for a rig layer is created is controlled in the
+    Rigify Layer Names panel.
+    """
     # Check if selection sets addon is installed
     if 'bone_selection_groups' not in bpy.context.preferences.addons \
             and 'bone_selection_sets' not in bpy.context.preferences.addons:
         return
 
-    bpy.ops.object.mode_set(mode='POSE')
-
-    bpy.context.view_layer.objects.active = obj
-    obj.select_set(True)
-    metarig.select_set(False)
-    pbones = obj.pose.bones
+    obj.selection_sets.clear()
 
     for i, name in enumerate(metarig.data.rigify_layers.keys()):
         if name == '' or not metarig.data.rigify_layers[i].selset:
             continue
 
-        bpy.ops.pose.select_all(action='DESELECT')
-        for b in pbones:
-            if b.bone.layers[i]:
-                b.bone.select = True
-
-        #bpy.ops.pose.selection_set_add()
-        obj.selection_sets.add()
-        obj.selection_sets[-1].name = name
-        if 'bone_selection_sets' in bpy.context.preferences.addons:
-            act_sel_set = obj.selection_sets[-1]
-
-            # iterate only the selected bones in current pose that are not hidden
-            for bone in bpy.context.selected_pose_bones:
-                if bone.name not in act_sel_set.bone_ids:
-                    bone_id = act_sel_set.bone_ids.add()
-                    bone_id.name = bone.name
+        create_selection_set_for_rig_layer(obj, name, i)
 
 
 def create_bone_groups(obj, metarig, priorities={}):
